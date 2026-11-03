@@ -207,30 +207,82 @@
   // ======================================================================
   // HOME
   // ======================================================================
+  // big face for the home page; the pupils follow the pointer
+  const HERO_FACE = `<svg viewBox="0 0 120 120" aria-hidden="true">
+    <line x1="60" y1="8" x2="60" y2="24" stroke="#0A0D14" stroke-width="5" stroke-linecap="round"/>
+    <circle cx="60" cy="8" r="7" fill="#F26A1B" stroke="#0A0D14" stroke-width="3" class="antenna"/>
+    <rect x="14" y="24" width="92" height="78" rx="26" fill="#22D3EE" stroke="#0A0D14" stroke-width="5"/>
+    <rect x="26" y="40" width="68" height="34" rx="16" fill="#0A0D14"/>
+    <g class="pupils"><circle cx="45" cy="57" r="8" fill="#a5f3fc"/><circle cx="75" cy="57" r="8" fill="#a5f3fc"/></g>
+    <path d="M46 86 Q60 96 74 86" stroke="#0A0D14" stroke-width="5" fill="none" stroke-linecap="round"/>
+    <rect x="4" y="50" width="12" height="24" rx="5" fill="#7C3AED" stroke="#0A0D14" stroke-width="3"/>
+    <rect x="104" y="50" width="12" height="24" rx="5" fill="#7C3AED" stroke="#0A0D14" stroke-width="3"/>
+  </svg>`;
+  // a little isometric block for the sky
+  const cube = (top, left, right) => `<svg viewBox="0 0 60 64"><path d="M30 2 58 17 30 32 2 17Z" fill="${top}"/><path d="M2 17 30 32v30L2 47Z" fill="${left}"/><path d="M58 17 30 32v30l28-15Z" fill="${right}"/></svg>`;
+  const SKY_CUBES = [
+    ['#5DBB4C', '#8B5E3C', '#6b4426', 6, 22, 64, 1.2], ['#EED89A', '#d9c07a', '#bfa45e', 84, 16, 54, 0.8],
+    ['#F5FAFF', '#8B5E3C', '#6b4426', 92, 64, 44, 1.5], ['#8B5CF6', '#8B5E3C', '#6b4426', 14, 76, 40, 1.8],
+    ['#9AA3AE', '#7d8691', '#646d78', 70, 82, 36, 2.2], ['#F26A1B', '#c9520f', '#a8430b', 46, 8, 30, 2.6],
+    ['#22D3EE', '#0ea5b7', '#0b8696', 30, 88, 28, 2.4], ['#FACC15', '#d4a90e', '#b08a08', 60, 40, 24, 3],
+  ];
+
   function renderHome() {
     level = null; running = false; runToken++;
     applyLang();
     const firstOpen = LEVELS.findIndex((l) => !progress[l.id]);
     const anyDone = LEVELS.some((l) => progress[l.id]);
+    const wdone = store.get('world:done', {});
+    const lvStars = LEVELS.reduce((a, l) => a + (progress[l.id] || 0), 0);
+    const wStars = WORLD_TASKS.reduce((a, tk) => a + (wdone[tk.c] || 0), 0);
+    const pct = Math.round((lvStars + wStars) / ((LEVELS.length + WORLD_TASKS.length) * 3) * 100);
     let n = 0;
     app.innerHTML = `
-      <header class="topbar">
-        <div class="brand"><span class="mini">${FACE_SVG}</span><b>${t('title')}</b></div>
-        <div class="top-actions">${topButtons()}</div>
-      </header>
-      <section class="hero">
-        <div class="hero-face">${FACE_SVG}</div>
-        <div>
-          <h1>${t('title')}</h1>
-          <p>${t('subtitle')}</p>
-          <div class="hero-btns">
-            <button class="btn big run" id="worldBtn">${t('w_btn')}</button>
-            <button class="btn big" id="startBtn">${anyDone ? t('continue') : t('start')}</button>
+      <div class="home">
+      <section class="hero2" id="hero">
+        <div class="sky" aria-hidden="true">
+          <i class="cloud c1"></i><i class="cloud c2"></i><i class="cloud c3"></i>
+          ${SKY_CUBES.map(([a, b, c, x, y, size, depth], i) => `<button class="sky-cube" tabindex="-1" data-depth="${depth}" style="left:${x}%;top:${y}%;width:${size}px;animation-delay:-${i * 0.7}s">${cube(a, b, c)}</button>`).join('')}
+        </div>
+        <header class="home-top">
+          <div class="brand"><span class="mini">${FACE_SVG}</span><b>${t('title')}</b></div>
+          <div class="top-actions">${topButtons()}</div>
+        </header>
+        <div class="hero2-in">
+          <div class="hero2-text">
+            <span class="tag">${t('h_tag')}</span>
+            <h1>${t('title')}</h1>
+            <p>${t('subtitle')}</p>
+            <div class="hero-btns">
+              <button class="btn big run" id="worldBtn">${t('w_btn')}</button>
+              <button class="btn big" id="startBtn">${anyDone ? t('continue') : t('start')}</button>
+            </div>
+            <div class="progress" title="${pct}%"><span style="width:${pct}%"></span><b>★ ${lvStars + wStars} / ${(LEVELS.length + WORLD_TASKS.length) * 3}</b></div>
           </div>
-          <p class="small world-note">${t('w_desc')}</p>
-          ${firstOpen === -1 ? `<p class="done-note">🏆 ${t('allDone')}</p>` : ''}
+          <button class="hero2-face" id="heroFace" aria-label="Fahim">${HERO_FACE}<span class="bubble" id="faceSay">${t('h_hi')}</span></button>
         </div>
       </section>
+
+      <section class="island-card" id="islandCard">
+        <div class="ic-text">
+          <h2>🏝️ ${t('w_title')}</h2>
+          <p>${t('w_desc')}</p>
+          <button class="btn run" id="worldBtn2">${t('h_play')}</button>
+        </div>
+        <div class="ic-isles">
+          ${WORLD_TASKS.map((tk, i) => {
+            const c = conceptOf(tk.c), st = wdone[tk.c] || 0;
+            const open = i === 0 || (wdone[WORLD_TASKS[i - 1].c] || 0) > 0;
+            return `<button class="isle${st ? ' done' : ''}${open ? '' : ' locked'}" style="--c:${c.color}" data-isle="${i}">
+              <span class="isle-top">${open ? tk.icon : '🔒'}</span>
+              <span class="isle-name">${L(tk.title)}</span>
+              <span class="lv-s">${'★'.repeat(st)}<i>${'★'.repeat(3 - st)}</i></span></button>`;
+          }).join('')}
+        </div>
+      </section>
+
+      <div class="sec-head"><h2>🧩 ${t('h_levels')}</h2><p>${t('h_levelsSub')}</p></div>
+      ${firstOpen === -1 ? `<p class="done-note">🏆 ${t('allDone')}</p>` : ''}
       <section class="concepts">
         ${CONCEPTS.map((c, ci) => {
           const lv = LEVELS.filter((l) => l.concept === c.id);
@@ -253,13 +305,41 @@
           <p>${t('sandboxDesc')}</p>
           <div class="lv-row"><button class="lv" id="sandboxBtn"><span class="lv-n">∞</span><span class="lv-t">${t('sandbox')}</span></button></div>
         </article>
-      </section>`;
+      </section>
+      <footer class="home-foot">${t('h_foot')}</footer>
+      </div>`;
     wireTop();
     $('#startBtn').onclick = () => openLevel(firstOpen === -1 ? 0 : firstOpen);
     $('#worldBtn').onclick = openWorld;
+    $('#worldBtn2').onclick = openWorld;
+    app.querySelectorAll('[data-isle]').forEach((b) => (b.onclick = openWorld));
     app.querySelectorAll('[data-lv]').forEach((b) => (b.onclick = () => openLevel(+b.dataset.lv)));
     app.querySelectorAll('[data-learn]').forEach((b) => (b.onclick = () => showConcept(conceptOf(b.dataset.learn))));
     $('#sandboxBtn').onclick = openSandbox;
+    wireHero();
+  }
+
+  // home page fun: eyes follow the pointer, blocks drift (parallax) and pop when tapped, Fahim talks
+  function wireHero() {
+    const hero = $('#hero'), pupils = $('#heroFace .pupils'), cubes = [...hero.querySelectorAll('.sky-cube')];
+    hero.addEventListener('pointermove', (e) => {
+      const r = hero.getBoundingClientRect(), nx = (e.clientX - r.left) / r.width - 0.5, ny = (e.clientY - r.top) / r.height - 0.5;
+      cubes.forEach((c) => c.style.translate = `${-nx * 30 * c.dataset.depth}px ${-ny * 20 * c.dataset.depth}px`);
+      const f = $('#heroFace').getBoundingClientRect(), dx = e.clientX - (f.left + f.width / 2), dy = e.clientY - (f.top + f.height / 2), d = Math.hypot(dx, dy) || 1;
+      pupils.setAttribute('transform', `translate(${(dx / d) * Math.min(4, d / 40)} ${(dy / d) * Math.min(3, d / 40)})`);
+    });
+    cubes.forEach((c, i) => (c.onclick = () => {
+      c.classList.remove('popped'); void c.offsetWidth; c.classList.add('popped');
+      tone(400 + i * 90, 0.12, 'triangle'); tone(600 + i * 90, 0.12, 'triangle', 0.06);
+    }));
+    const lines = [t('h_hi'), t('h_say1'), t('h_say2'), t('h_say3')];
+    let k = 0;
+    $('#heroFace').onclick = () => {
+      k = (k + 1) % lines.length;
+      const b = $('#faceSay'); b.textContent = lines[k]; b.classList.remove('show'); void b.offsetWidth; b.classList.add('show');
+      $('#heroFace').classList.remove('wiggle'); void $('#heroFace').offsetWidth; $('#heroFace').classList.add('wiggle');
+      sfx.gem();
+    };
   }
 
   function topButtons() {
