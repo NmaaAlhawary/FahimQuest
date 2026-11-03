@@ -33,7 +33,6 @@
 
   // ---------- sound ----------
   let actx = null;
-  let fromWorld = false;                         // level was opened from Cube Island
   function tone(freq, dur = 0.12, type = 'sine', when = 0, vol = 0.15) {
     if (muted) return;
     try {
@@ -209,7 +208,7 @@
   // HOME
   // ======================================================================
   function renderHome() {
-    level = null; running = false; runToken++; fromWorld = false;
+    level = null; running = false; runToken++;
     applyLang();
     const firstOpen = LEVELS.findIndex((l) => !progress[l.id]);
     const anyDone = LEVELS.some((l) => progress[l.id]);
@@ -275,7 +274,6 @@
   // ======================================================================
   // CUBE ISLAND (3D world, world.js)
   // ======================================================================
-  function goBack() { fromWorld ? openWorld() : renderHome(); }
   function openWorld() {
     level = null; running = false; runToken++; closeModal();
     applyLang();
@@ -289,9 +287,9 @@
     progress: () => progress,
     toggleLang() { lang = lang === 'en' ? 'ar' : 'en'; store.set('lang', lang); applyLang(); },
     toggleMute() { muted = !muted; store.set('muted', muted); },
-    openLevel(i) { fromWorld = true; openLevel(i); },
-    openSandbox() { fromWorld = true; openSandbox(); },
     home: renderHome,
+    confetti: () => confetti(),
+    showConcept: (c) => showConcept(c),
   });
 
   // ======================================================================
@@ -356,7 +354,7 @@
     const maps = levelMaps();
     app.innerHTML = `
       <header class="topbar" style="--c:${c.color}">
-        <button class="btn ghost" id="backBtn">${fromWorld ? t('w_back') : t('map')}</button>
+        <button class="btn ghost" id="backBtn">${t('map')}</button>
         <div class="lvl-title">
           <button class="chip" id="conceptBtn" ${level.concept ? '' : 'disabled'}>${c.icon} ${L(c.name)}</button>
           <h1>${isSandbox ? '' : levelIdx + 1 + '. '}${L(level.title)}</h1>
@@ -392,7 +390,7 @@
         </section>
       </main>`;
     wireTop();
-    $('#backBtn').onclick = goBack;
+    $('#backBtn').onclick = renderHome;
     if (level.concept) $('#conceptBtn').onclick = () => showConcept(c);
     $('#runBtn').onclick = () => (running ? stopRun() : runProgram());
     $('#resetBtn').onclick = () => { stopRun(); loadVariant(variant); setMsg(''); };
@@ -886,12 +884,12 @@
         ${lastOfConcept ? `<div class="learned"><b>${c.icon} ${t('learned', { c: L(c.name) })}</b><pre dir="ltr">${esc(c.code)}</pre></div>` : ''}
         <div class="win-actions">
           <button class="btn" id="wReplay">${t('replay')}</button>
-          <button class="btn" id="wMap">${fromWorld ? t('w_back') : t('toMap')}</button>
+          <button class="btn" id="wMap">${t('toMap')}</button>
           ${next ? `<button class="btn run" id="wNext">${t('next')}</button>` : `<button class="btn run" id="wFree">${t('sandbox')} 🛠️</button>`}
         </div>
       </div>`, (m) => {
       $('#wReplay', m).onclick = () => { closeModal(); loadVariant(0); setMsg(''); };
-      $('#wMap', m).onclick = () => { closeModal(); goBack(); };
+      $('#wMap', m).onclick = () => { closeModal(); renderHome(); };
       if (next) $('#wNext', m).onclick = () => { closeModal(); openLevel(levelIdx + 1); };
       else $('#wFree', m).onclick = () => { closeModal(); openSandbox(); };
     }), 700);

@@ -1,12 +1,13 @@
-// Cube Island (جزيرة المكعبات): a 3D block world on top of the 12 levels.
-// Fahim walks between 7 islands. Each glowing crystal opens one coding level, and
-// finishing both levels of an island builds the bridge to the next one.
+// Cube Island (جزيرة المكعبات): a 3D block world with its own story challenges.
+// Fahim walks between 7 islands. Each island has one crystal: walk to it and the island's
+// task (world-tasks.js) opens right there. Kids write a block program and Fahim runs it on
+// the grid in 3D (carry, sort, place). Solving it builds the bridge to the next island.
 // Kids can also break and place blocks on the land (saved in localStorage).
 // app.js calls CubeIsland.init(api) once, then CubeIsland.open() to enter.
 window.CubeIsland = (() => {
   'use strict';
 
-  const W = 72, D = 64, H = 16, SEA = 1.7, REACH = 6.5, BUILD_UP = 4;
+  const W = 80, D = 72, H = 16, SEA = 1.7, REACH = 6.5, BUILD_UP = 4;
   const I = (x, y, z) => (y * D + z) * W + x;
   const C = (x, z) => z * W + x;
   const inB = (x, y, z) => x >= 0 && x < W && z >= 0 && z < D && y >= 0 && y < H;
@@ -18,13 +19,13 @@ window.CubeIsland = (() => {
 
   // Islands in quest order. Bridge k joins island k to island k+1.
   const ISLANDS = [
-    { c: 'pos', x: 12, z: 12, r: 7, top: T.grass, fill: T.dirt, deco: 'tree' },
-    { c: 'seq', x: 36, z: 11, r: 7, top: T.grass, fill: T.dirt, deco: 'bush' },
-    { c: 'loop', x: 60, z: 14, r: 7, top: T.sand, fill: T.sand, deco: 'cactus' },
-    { c: 'var', x: 59, z: 40, r: 7, top: T.snow, fill: T.dirt, deco: 'pine' },
-    { c: 'cond', x: 35, z: 51, r: 7, top: T.stone, fill: T.stone, deco: 'rock' },
-    { c: 'fn', x: 11, z: 45, r: 7, top: T.magic, fill: T.dirt, deco: 'crystal' },
-    { c: 'build', x: 34, z: 31, r: 5, top: T.planks, fill: T.stone, deco: 'none' },
+    { c: 'pos', x: 13, z: 13, r: 8, top: T.grass, fill: T.dirt, deco: 'tree' },
+    { c: 'seq', x: 40, z: 12, r: 8, top: T.grass, fill: T.dirt, deco: 'bush' },
+    { c: 'loop', x: 67, z: 15, r: 8, top: T.sand, fill: T.sand, deco: 'cactus' },
+    { c: 'var', x: 66, z: 44, r: 8, top: T.snow, fill: T.dirt, deco: 'pine' },
+    { c: 'cond', x: 39, z: 57, r: 8, top: T.stone, fill: T.stone, deco: 'rock' },
+    { c: 'fn', x: 12, z: 50, r: 8, top: T.magic, fill: T.dirt, deco: 'crystal' },
+    { c: 'build', x: 38, z: 34, r: 5, top: T.planks, fill: T.stone, deco: 'none' },
   ];
 
   let api, inited = false, active = false, raf = 0, lastT = 0;
@@ -35,9 +36,13 @@ window.CubeIsland = (() => {
   let meshes = [], ghost = null, mats = {}, swatch = {};
   const crystals = [], bits = [], clouds = [];
   let pending = [];                       // bridge cells waiting to pop in
-  let edits, built, gotGems;
+  let edits, built, gotGems, done;
+  let mode = 'explore', task = null;      // 'challenge' while a story task is open
+  const anims = [];
   const P = { x: 0, y: 0, z: 0, vy: 0, ground: false, yaw: 0, safe: null };
   const cam = { yaw: 0, pitch: 0.55, dist: 8, x: 0, y: 0, z: 0 };
+  const look = { x: 0, y: 0, z: 0 };
+  let run = null;                         // state of the program while it runs
   const keys = new Set(), joy = { x: 0, y: 0 };
   let tool = 'hand', near = null, toastTimer = 0;
   const $ = (s) => document.querySelector(s);
@@ -111,8 +116,9 @@ window.CubeIsland = (() => {
   // ---------------------------------------------------------------------
   // world generation
   // ---------------------------------------------------------------------
-  const levelsOf = (c) => LEVELS.map((l, i) => ({ l, i })).filter((o) => o.l.concept === c);
-  const isDone = (k) => ISLANDS[k].c !== 'build' && levelsOf(ISLANDS[k].c).every((o) => (api.progress()[o.l.id] || 0) > 0);
+  const isDone = (k) => (done[ISLANDS[k].c] || 0) > 0;
+  // task grid (gx, gy) -> world column; y counts away from the crystal (north)
+  const cellW = (isl, gx, gy) => ({ x: isl.zone.ox + gx, z: isl.zone.oz + isl.zone.h - 1 - gy });
   function put(x, y, z, t) { if (inB(x, y, z) && !vox[I(x, y, z)]) vox[I(x, y, z)] = t; }
 
   function terrain(k, isl) {
@@ -122,8 +128,10 @@ window.CubeIsland = (() => {
         const dx = x + 0.5 - isl.x, dz = z + 0.5 - isl.z, d = Math.hypot(dx, dz), a = Math.atan2(dz, dx);
         const edge = isl.r + 0.9 * Math.sin(3 * a + s) + 0.5 * Math.sin(5 * a + 2 * s);
         if (d > edge) continue;
-        const beach = d > edge - 1.4;
-        const h = beach ? 2 : isl.c === 'build' || d > isl.r * 0.6 ? 3 : 4;
+        const z0 = isl.zone, inZone = z0 && x >= z0.ox && x < z0.ox + z0.w && z >= z0.oz && z < z0.oz + z0.h;
+        const inMargin = z0 && x >= z0.ox - 1 && x <= z0.ox + z0.w && z >= z0.oz - 1 && z <= z0.oz + z0.h;
+        const beach = !inMargin && d > edge - 1.4;
+        const h = inZone ? 4 : inMargin ? (d > edge - 1.4 ? 3 : 4) : beach ? 2 : isl.c === 'build' || d > isl.r * 0.6 ? 3 : 4;
         for (let y = 0; y < h; y++) vox[I(x, y, z)] = y === h - 1 ? (beach ? T.sand : isl.top) : y < h - 3 ? T.stone : isl.fill;
         land[C(x, z)] = 1; ground[C(x, z)] = h; islandOf[C(x, z)] = k + 1;
       }
@@ -174,15 +182,27 @@ window.CubeIsland = (() => {
   function generate() {
     vox.fill(0); prot.fill(0); land.fill(0); ground.fill(0); islandOf.fill(0); clear.fill(0);
     stations.length = 0; gems.length = 0; bridges.length = 0; stationAt.clear();
+    ISLANDS.forEach((isl) => {
+      isl.task = WORLD_TASKS.find((t) => t.c === isl.c) || null;
+      if (isl.task) isl.zone = { ox: isl.x - Math.floor(isl.task.w / 2), oz: isl.z - Math.floor(isl.task.h / 2), w: isl.task.w, h: isl.task.h, top: 4 };
+    });
     ISLANDS.forEach((isl, k) => terrain(k, isl));
 
-    // stations: two level crystals per concept island; Free Build + trophy on the workshop
+    // task zones: protected, kept clear, with their wall blocks
+    ISLANDS.forEach((isl) => {
+      const z0 = isl.zone; if (!z0) return;
+      for (let x = z0.ox - 3; x <= z0.ox + z0.w + 2; x++) for (let z = z0.oz - 2; z <= z0.oz + z0.h + 3; z++) {
+        if (inB(x, 0, z)) clear[C(x, z)] = 1;
+        if (x >= z0.ox && x < z0.ox + z0.w && z >= z0.oz && z < z0.oz + z0.h) for (let y = 0; y < H; y++) prot[I(x, y, z)] = 1;
+      }
+      (isl.task.walls || []).forEach((w) => { const c = cellW(isl, w.x, w.y); vox[I(c.x, z0.top, c.z)] = T[w.t]; });
+    });
+
+    // stations: one crystal in front of each task zone; the trophy on the workshop
     ISLANDS.forEach((isl, k) => {
-      const list = isl.c === 'build'
-        ? [{ kind: 'sandbox', x: isl.x - 2 }, { kind: 'trophy', x: isl.x + 2 }]
-        : levelsOf(isl.c).map((o, n) => ({ kind: 'level', level: o.i, x: isl.x + (n ? 3 : -3) }));
+      const list = isl.zone ? [{ kind: 'task', task: isl.task, x: isl.zone.ox - 1, z: isl.zone.oz + isl.zone.h + 1 }] : [{ kind: 'trophy', x: isl.x, z: isl.z }];
       list.forEach((s) => {
-        Object.assign(s, { z: isl.z, isl: k, y: ground[C(s.x, isl.z)] });
+        Object.assign(s, { isl: k, y: ground[C(s.x, s.z)] });
         vox[I(s.x, s.y, s.z)] = T.metal;
         for (let y = s.y; y < H; y++) prot[I(s.x, y, s.z)] = 1;
         for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) clear[C(s.x + a, s.z + b)] = 1;
@@ -210,8 +230,6 @@ window.CubeIsland = (() => {
       bridges.push({ k, cells, mid: mid || { x: a.x + dx / 2, z: a.z + dz / 2 } });
     }
 
-    const sp = ISLANDS[0];
-    for (let a = -2; a <= 2; a++) for (let b = 2; b <= 6; b++) clear[C(sp.x + a, sp.z + b)] = 1;
     ISLANDS.forEach((isl, k) => decorate(k, isl));
 
     // the player's own blocks
@@ -292,12 +310,12 @@ window.CubeIsland = (() => {
   const conceptOf = (c) => CONCEPTS.find((x) => x.id === c);
   const islandName = (k) => ISLANDS[k].c === 'build' ? api.t('w_workshop') : api.t('w_islandOf', { c: api.L(conceptOf(ISLANDS[k].c).name) });
   const islandColor = (k) => ISLANDS[k].c === 'build' ? '#0A0D14' : conceptOf(ISLANDS[k].c).color;
-  const allDone = () => LEVELS.every((l) => (api.progress()[l.id] || 0) > 0);
+  const allDone = () => WORLD_TASKS.every((t) => (done[t.c] || 0) > 0);
 
   function makeStationMeshes() {
     stations.forEach((s) => {
-      const color = s.kind === 'level' ? conceptOf(LEVELS[s.level].concept).color : s.kind === 'trophy' ? '#FACC15' : '#F26A1B';
-      const geo = s.kind === 'trophy' ? new THREE.BoxGeometry(0.6, 0.6, 0.6) : s.kind === 'sandbox' ? new THREE.TorusKnotGeometry(0.3, 0.1, 48, 8) : new THREE.OctahedronGeometry(0.45);
+      const color = s.kind === 'task' ? conceptOf(s.task.c).color : '#FACC15';
+      const geo = s.kind === 'trophy' ? new THREE.BoxGeometry(0.6, 0.6, 0.6) : new THREE.OctahedronGeometry(0.45);
       const mat = new THREE.MeshLambertMaterial({ color, emissive: color, emissiveIntensity: 0.45 });
       const m = new THREE.Mesh(geo, mat);
       m.position.set(s.x + 0.5, s.y + 1.9, s.z + 0.5);
@@ -314,22 +332,86 @@ window.CubeIsland = (() => {
       m.position.set(g.x, g.y, g.z); g.mesh = m; scene.add(m);
     });
     bridges.forEach((b) => { b.lock = new THREE.Group(); scene.add(b.lock); });
+    ISLANDS.forEach(makeZone);
+  }
+
+  // ---- task zone props: grid tiles, coordinates, pads, items ----
+  const ITEM_LOOK = {
+    chest: () => { const g = new THREE.Group(); g.add(boxMesh(0.62, 0.42, 0.44, 0x8b5e3c)); const lid = boxMesh(0.64, 0.14, 0.46, 0x6b4426); lid.position.y = 0.27; g.add(lid); const band = boxMesh(0.12, 0.44, 0.47, 0xfacc15); band.position.y = 0.04; g.add(band); return g; },
+    crate: () => { const g = new THREE.Group(); g.add(boxMesh(0.56, 0.4, 0.56, 0xc8955a)); for (let i = 0; i < 4; i++) { const o = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 6), new THREE.MeshLambertMaterial({ color: 0xf26a1b })); o.position.set(-0.14 + (i % 2) * 0.28, 0.24, -0.14 + Math.floor(i / 2) * 0.28); g.add(o); } return g; },
+    bucket: () => { const g = new THREE.Group(); const b = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.2, 0.42, 12), new THREE.MeshLambertMaterial({ color: 0x9aa3ae })); g.add(b); const w = new THREE.Mesh(new THREE.CylinderGeometry(0.23, 0.23, 0.04, 12), new THREE.MeshLambertMaterial({ color: 0x3b82f6, emissive: 0x1d4ed8, emissiveIntensity: 0.3 })); w.position.y = 0.18; g.add(w); return g; },
+    snow: () => new THREE.Mesh(new THREE.SphereGeometry(0.28, 14, 10), new THREE.MeshLambertMaterial({ color: 0xffffff, emissive: 0xdbeafe, emissiveIntensity: 0.3 })),
+    gembox: () => boxMesh(0.5, 0.42, 0.5, 0xdc2626),
+    crystal: () => new THREE.Mesh(new THREE.OctahedronGeometry(0.3), new THREE.MeshLambertMaterial({ color: 0xe879f9, emissive: 0xc026d3, emissiveIntensity: 0.7 })),
+  };
+  const COLORS = { red: 0xdc2626, blue: 0x2563eb };
+  function boxMesh(w, h, d, color) { return new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshLambertMaterial({ color })); }
+  function tint(obj, color) { obj.traverse((m) => { if (m.isMesh) m.material.color.setHex(color); }); }
+
+  function makeZone(isl) {
+    if (!isl.zone) return;
+    const z0 = isl.zone, tk = isl.task, top = z0.top;
+    const g = new THREE.Group(); scene.add(g); z0.group = g;
+    const tileMat = [new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.32, depthWrite: false }),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.16, depthWrite: false })];
+    const tileGeo = new THREE.PlaneGeometry(0.94, 0.94);
+    for (let gx = 0; gx < tk.w; gx++) for (let gy = 0; gy < tk.h; gy++) {
+      const c = cellW(isl, gx, gy), m = new THREE.Mesh(tileGeo, tileMat[(gx + gy) % 2]);
+      m.rotation.x = -Math.PI / 2; m.position.set(c.x + 0.5, top + 0.02, c.z + 0.5); g.add(m);
+    }
+    z0.pads = tk.pads.map((p) => {
+      const c = cellW(isl, p.x, p.y);
+      const m = boxMesh(0.9, 0.06, 0.9, parseInt(p.color.slice(1), 16));
+      m.material.emissive = new THREE.Color(p.color); m.material.emissiveIntensity = 0.35;
+      m.position.set(c.x + 0.5, top + 0.04, c.z + 0.5); g.add(m);
+      const sp = label([{ text: p.icon, size: 84 }], p.color, 150, 130);
+      sp.scale.multiplyScalar(0.55); sp.position.set(c.x + 0.5, top + 1.25, c.z + 0.5); g.add(sp);
+      return m;
+    });
+    z0.coords = new THREE.Group(); g.add(z0.coords);
+    z0.items = tk.items.map((it) => { const m = ITEM_LOOK[it.kind](); g.add(m); return m; });
+    z0.crystals = [];
+    resetZone(isl, isDone(ISLANDS.indexOf(isl)));
+  }
+  function coordLabels(isl) {
+    const z0 = isl.zone, tk = isl.task; z0.coords.clear();
+    if (!tk.coords) return;
+    const add = (text, x, z, color) => { const sp = label([{ text, bold: true, size: 70, color }], color, 120, 110); sp.scale.multiplyScalar(0.45); sp.position.set(x, z0.top + 0.35, z); z0.coords.add(sp); };
+    for (let gx = 0; gx < tk.w; gx++) { const c = cellW(isl, gx, 0); add(String(gx), c.x + 0.5, c.z + 1.5, '#0EA5A4'); }
+    for (let gy = 0; gy < tk.h; gy++) { const c = cellW(isl, 0, gy); add(String(gy), c.x - 0.5, c.z + 0.5, '#DC2626'); }
+    const c0 = cellW(isl, tk.w - 1, 0); add(api.t('x') + ' →', c0.x + 1.6, c0.z + 1.5, '#0EA5A4');
+    const c1 = cellW(isl, 0, tk.h - 1); add(api.t('y') + ' ↑', c1.x - 0.5, c1.z - 0.6, '#DC2626');
+  }
+  // put the props back at the start (or at the finish, when the task is solved)
+  function resetZone(isl, solved, trial) {
+    const z0 = isl.zone, tk = isl.task;
+    z0.crystals.forEach((m) => z0.group.remove(m)); z0.crystals = [];
+    tk.items.forEach((it, n) => {
+      const m = z0.items[n];
+      const color = (tk.trials ? tk.trials[trial || 0] : it.color);
+      if (color) tint(m, COLORS[color]);
+      let gx = it.x, gy = it.y;
+      if (solved) { const pad = tk.pads.find((p) => p.accepts === it.kind || p.accepts === color); if (pad) { gx = pad.x; gy = pad.y; } }
+      const c = cellW(isl, gx, gy); m.position.set(c.x + 0.5, z0.top + 0.3, c.z + 0.5); m.visible = true;
+    });
+    if (solved && tk.goal_type === 'lamps') tk.pads.forEach((p) => lightLamp(isl, p.x, p.y));
+  }
+  function lightLamp(isl, gx, gy) {
+    const z0 = isl.zone, m = ITEM_LOOK.crystal(), c = cellW(isl, gx, gy);
+    m.position.set(c.x + 0.5, z0.top + 0.5, c.z + 0.5); m.userData.spin = true; z0.group.add(m); z0.crystals.push(m);
+    return m;
   }
   function refreshLabels() {
-    const prog = api.progress();
     stations.forEach((s) => {
       let lines;
-      if (s.kind === 'level') {
-        const l = LEVELS[s.level], st = prog[l.id] || 0;
-        lines = [{ text: `${conceptOf(l.concept).icon} ${s.level + 1}. ${api.L(l.title)}`, bold: true }, { text: '★'.repeat(st) + '☆'.repeat(3 - st), color: st ? '#EAB308' : '#94a3b8', size: 52 }];
+      if (s.kind === 'task') {
+        const st = done[s.task.c] || 0;
+        lines = [{ text: `${s.task.icon} ${api.L(s.task.title)}`, bold: true }, { text: '★'.repeat(st) + '☆'.repeat(3 - st), color: st ? '#EAB308' : '#94a3b8', size: 52 }];
         s.mesh.material.color.set(st ? '#FACC15' : s.color); s.mesh.material.emissive.set(st ? '#FACC15' : s.color);
         s.beam.visible = st > 0;
-      } else if (s.kind === 'sandbox') {
-        lines = [{ text: '🛠️ ' + api.t('sandbox'), bold: true }, { text: api.t('w_sandboxSub'), size: 32, color: '#5b6475' }];
-        s.beam.visible = false;
       } else {
-        const n = LEVELS.filter((l) => (prog[l.id] || 0) > 0).length;
-        lines = [{ text: '🏆 ' + api.t('w_trophy'), bold: true }, { text: `${n} / ${LEVELS.length}`, size: 40, color: allDone() ? '#EAB308' : '#5b6475' }];
+        const n = WORLD_TASKS.filter((t) => done[t.c] > 0).length;
+        lines = [{ text: '🏆 ' + api.t('w_trophy'), bold: true }, { text: `${n} / ${WORLD_TASKS.length}`, size: 40, color: allDone() ? '#EAB308' : '#5b6475' }];
         s.mesh.visible = allDone(); s.beam.visible = allDone();
       }
       const sp = label(lines, s.color, 512, 200, true);
@@ -342,6 +424,7 @@ window.CubeIsland = (() => {
       sp.scale.multiplyScalar(1.6);
       sp.position.set(isl.x + 0.5, 10.5, isl.z + 0.5);
       isl.holder = isl.holder || {}; setLabel(isl.holder, sp);
+      if (isl.zone) coordLabels(isl);
     });
     bridges.forEach((b) => {
       b.lock.clear();
@@ -419,7 +502,7 @@ window.CubeIsland = (() => {
     return r;
   }
   function placeAt(p) { P.x = p.x; P.y = p.y; P.z = p.z; P.vy = 0; }
-  function spawnPoint() { const s = ISLANDS[0]; return { x: s.x + 0.5, y: ground[C(s.x, s.z + 4)], z: s.z + 4.5 }; }
+  function spawnPoint() { const s = stations[0]; return { x: s.x + 0.5, y: ground[C(s.x, s.z + 2)], z: s.z + 2.5 }; }
 
   function step(dt) {
     let ix = 0, iz = 0;
@@ -473,7 +556,11 @@ window.CubeIsland = (() => {
     if (!active) return;
     raf = requestAnimationFrame(frame);
     const dt = Math.min(0.05, (now - (lastT || now)) / 1000); lastT = now; time += dt;
-    step(dt);
+    if (mode === 'explore') step(dt);
+    for (let i = anims.length - 1; i >= 0; i--) {
+      const a = anims[i]; a.t = Math.min(1, a.t + dt / a.dur); a.fn(a.t);
+      if (a.t >= 1) { anims.splice(i, 1); a.done(); }
+    }
 
     // bridge cells pop in one after another
     if (pending.length) {
@@ -489,7 +576,7 @@ window.CubeIsland = (() => {
     gems.forEach((g) => {
       if (gotGems[g.id]) { g.mesh.visible = false; return; }
       g.mesh.rotation.y += dt * 2; g.mesh.rotation.x += dt; g.mesh.position.y = g.y + Math.sin(time * 3 + g.x) * 0.12;
-      if (Math.hypot(P.x - g.x, P.z - g.z) < 0.75 && Math.abs(P.y + 0.6 - g.y) < 1.2) {
+      if (mode === 'explore' && Math.hypot(P.x - g.x, P.z - g.z) < 0.75 && Math.abs(P.y + 0.6 - g.y) < 1.2) {
         gotGems[g.id] = 1; api.store.set('world:gems', gotGems);
         api.sfx.gem(); burst(g.x, g.y, g.z, 0x22d3ee);
         const n = Object.keys(gotGems).length;
@@ -497,9 +584,12 @@ window.CubeIsland = (() => {
         hud();
       }
     });
-    stations.forEach((s) => { if (s.sprite) s.sprite.visible = Math.hypot(P.x - s.x, P.z - s.z) < 16; });
+    stations.forEach((s) => { if (s.sprite) s.sprite.visible = mode === 'explore' && Math.hypot(P.x - s.x, P.z - s.z) < 16; });
     ISLANDS.forEach((isl) => { if (isl.holder && isl.holder.sprite) isl.holder.sprite.visible = Math.hypot(P.x - isl.x, P.z - isl.z) > isl.r + 3; });
+    stations.forEach((s) => { s.mesh.visible = mode === 'explore' && (s.kind === 'task' || allDone()); if (mode !== 'explore') s.beam.visible = false; });
     crystals.forEach((m, n) => { m.rotation.y += dt * 1.4; m.position.y = m.userData.station.y + 1.9 + Math.sin(time * 2 + n) * 0.12; });
+    ISLANDS.forEach((isl) => isl.zone && isl.zone.crystals.forEach((m) => { m.rotation.y += dt * 2; }));
+    if (run && run.carry != null) { const m = task.isl.zone.items[run.carry]; m.position.set(P.x, P.y + 1.85, P.z); }
     clouds.forEach((c) => { c.position.x += dt * 0.6; if (c.position.x > W + 30) c.position.x = -30; });
     waterTex.offset.x = time * 0.01; waterTex.offset.y = Math.sin(time * 0.5) * 0.02;
     for (let i = bits.length - 1; i >= 0; i--) {
@@ -508,7 +598,7 @@ window.CubeIsland = (() => {
     }
 
     // station nearby?
-    let best = null, bd = 2.4;
+    let best = null, bd = mode === 'explore' ? 2.4 : 0;
     stations.forEach((s) => { const d = Math.hypot(P.x - s.x - 0.5, P.z - s.z - 0.5); if (d < bd && Math.abs(P.y - s.y) < 2.5) { bd = d; best = s; } });
     if (best !== near) { near = best; prompt(); }
 
@@ -517,12 +607,21 @@ window.CubeIsland = (() => {
     fahim.rotation.y = P.yaw;
     let gy = Math.floor(P.y); while (gy > 0 && !vox[I(Math.floor(P.x), gy - 1, Math.floor(P.z))]) gy--;
     shadow.position.set(P.x, (gy > 0 ? gy : SEA) + 0.02, P.z); shadow.visible = gy > 0;
-    const tx = P.x, ty = P.y + 1.1, tz = P.z;
+    let tx = P.x, ty = P.y + 1.1, tz = P.z;
+    if (mode === 'challenge') { const z0 = task.isl.zone; tx = z0.ox + z0.w / 2; ty = z0.top; tz = z0.oz + z0.h / 2 + 0.5; }
+    look.x += (tx - look.x) * Math.min(1, dt * 6); look.y += (ty - look.y) * Math.min(1, dt * 6); look.z += (tz - look.z) * Math.min(1, dt * 6);
+    tx = look.x; ty = look.y; tz = look.z;
     const cx = tx + Math.sin(cam.yaw) * Math.cos(cam.pitch) * cam.dist, cy = ty + Math.sin(cam.pitch) * cam.dist, cz = tz + Math.cos(cam.yaw) * Math.cos(cam.pitch) * cam.dist;
     const f = Math.min(1, dt * 8);
     cam.x += (cx - cam.x) * f; cam.y += (cy - cam.y) * f; cam.z += (cz - cam.z) * f;
     camera.position.set(cam.x, cam.y, cam.z); camera.lookAt(tx, ty, tz);
-    compass();
+    if (mode === 'explore') compass();
+    else {
+      const v = new THREE.Vector3(P.x, P.y + 2.1, P.z).project(camera), el = $('#wBubble'), w = window.innerWidth, h = window.innerHeight;
+      const bx = Math.max(16 + el.offsetWidth / 2, Math.min(w - 16 - el.offsetWidth / 2, (v.x + 1) / 2 * w));
+      const by = Math.max(70 + el.offsetHeight, Math.min(h - $('#wPanel').offsetHeight - 10, (1 - v.y) / 2 * h));
+      el.style.left = bx + 'px'; el.style.top = by + 'px';
+    }
     renderer.render(scene, camera);
   }
 
@@ -538,21 +637,18 @@ window.CubeIsland = (() => {
   // quests, HUD
   // ---------------------------------------------------------------------
   function target() {
-    const prog = api.progress();
-    return stations.find((s) => s.kind === 'level' && !(prog[LEVELS[s.level].id] > 0)) || stations.find((s) => s.kind === 'sandbox');
+    return stations.find((s) => s.kind === 'task' && !(done[s.task.c] > 0)) || stations.find((s) => s.kind === 'trophy');
   }
   function hud() {
-    const prog = api.progress();
-    const stars = LEVELS.reduce((a, l) => a + (prog[l.id] || 0), 0);
-    $('#wStars').textContent = `★ ${stars}/${LEVELS.length * 3}`;
+    const stars = WORLD_TASKS.reduce((a, t) => a + (done[t.c] || 0), 0);
+    $('#wStars').textContent = `★ ${stars}/${WORLD_TASKS.length * 3}`;
     $('#wGems').textContent = `💎 ${Object.keys(gotGems).length}/${gems.length}`;
     const t = target();
     let q;
     if (allDone()) q = api.t('w_questDone');
     else {
-      const k = t.isl, n = levelsOf(ISLANDS[k].c).filter((o) => (prog[o.l.id] || 0) > 0).length;
-      q = api.t('w_quest', { i: islandName(k), n });
-      if (!reachable()[k]) q += ' ' + api.t('w_questLocked');
+      q = api.t('w_quest', { i: islandName(t.isl), task: t.task.icon + ' ' + api.L(t.task.title) });
+      if (!reachable()[t.isl]) q += ' ' + api.t('w_questLocked');
     }
     $('#wQuest').innerHTML = `<b>🎯 ${api.t('w_questTitle')}</b><span>${q}</span>`;
   }
@@ -570,19 +666,367 @@ window.CubeIsland = (() => {
     const el = $('#wPrompt');
     if (!near) { el.hidden = true; return; }
     el.hidden = false;
-    const prog = api.progress();
-    if (near.kind === 'level') {
-      const l = LEVELS[near.level], st = prog[l.id] || 0;
-      el.innerHTML = `<kbd>E</kbd> ▶ ${api.t('w_play')}: ${near.level + 1}. ${api.L(l.title)} <span class="st">${'★'.repeat(st)}${'☆'.repeat(3 - st)}</span>`;
-    } else if (near.kind === 'sandbox') el.innerHTML = `<kbd>E</kbd> 🛠️ ${api.t('sandbox')}`;
-    else el.innerHTML = allDone() ? `🏆 ${api.t('w_champion')}` : `🏆 ${api.t('w_trophyLocked', { n: LEVELS.filter((l) => (prog[l.id] || 0) > 0).length, m: LEVELS.length })}`;
+    if (near.kind === 'task') {
+      const st = done[near.task.c] || 0;
+      el.innerHTML = `<kbd>E</kbd> ▶ ${api.t('w_play')}: ${near.task.icon} ${api.L(near.task.title)} <span class="st">${'★'.repeat(st)}${'☆'.repeat(3 - st)}</span>`;
+    } else el.innerHTML = allDone() ? `🏆 ${api.t('w_champion')}` : `🏆 ${api.t('w_trophyLocked', { n: WORLD_TASKS.filter((t) => done[t.c] > 0).length, m: WORLD_TASKS.length })}`;
   }
   function useStation(s) {
     if (!s) return;
-    if (s.kind === 'trophy') { if (allDone()) { api.sfx.win(); burst(s.x + 0.5, s.y + 2, s.z + 0.5, 0xfacc15); toast('🏆 ' + api.t('w_champion')); } return; }
-    savePos();
-    close();
-    if (s.kind === 'level') api.openLevel(s.level); else api.openSandbox();
+    if (s.kind === 'trophy') { if (allDone()) { api.sfx.win(); api.confetti(); burst(s.x + 0.5, s.y + 2, s.z + 0.5, 0xfacc15); toast('🏆 ' + api.t('w_champion')); } return; }
+    startChallenge(s);
+  }
+
+  // ---------------------------------------------------------------------
+  // story challenge: block editor + runner that moves Fahim on the 3D grid
+  // ---------------------------------------------------------------------
+  const DIRS = { E: [1, 0], N: [0, 1], W: [-1, 0], S: [0, -1] };
+  const ORDER = ['E', 'N', 'W', 'S'];               // turning left = next in this list
+  const yawOf = (d) => ({ E: Math.PI / 2, N: Math.PI, W: -Math.PI / 2, S: 0 })[d];
+  const CAT = { move: 'motion', turnL: 'motion', turnR: 'motion', goto: 'pos', pick: 'hand', drop: 'hand', place: 'hand', repeat: 'loop', if: 'cond', set: 'var', moveVar: 'var', call: 'fn' };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  let uid = 1, prog = { main: [], fn: [] }, activeCid = 'main', running = false, runToken = 0, station = null, savedCam = null;
+
+  function newBlock(type, raw = {}) {
+    const b = { id: 'w' + uid++, type };
+    if (type === 'repeat') b.n = raw.n != null ? raw.n : 3;
+    if (type === 'set') b.n = raw.n != null ? raw.n : 1;
+    if (type === 'goto') { b.x = raw.x || 0; b.y = raw.y || 0; }
+    if (type === 'if') { b.cond = 'red'; b.else = (raw.else || []).map((r) => newBlock(r.type, r)); }
+    if (type === 'repeat' || type === 'if') b.body = (raw.body || []).map((r) => newBlock(r.type, r));
+    return b;
+  }
+  const strip = (list) => list.map((b) => {
+    const o = { type: b.type };
+    ['n', 'x', 'y'].forEach((k) => { if (b[k] !== undefined) o[k] = b[k]; });
+    if (b.body) o.body = strip(b.body);
+    if (b.else) o.else = strip(b.else);
+    return o;
+  });
+  const count = (list) => list.reduce((a, b) => a + 1 + (b.body ? count(b.body) : 0) + (b.else ? count(b.else) : 0), 0);
+  const uses = (list, type) => list.some((b) => b.type === type || (b.body && uses(b.body, type)) || (b.else && uses(b.else, type)));
+  function findBlock(id, lists = [prog.main, prog.fn]) {
+    for (const l of lists) for (const b of l) {
+      if (b.id === id) return b;
+      const f = findBlock(id, [b.body || [], b.else || []]); if (f) return f;
+    }
+    return null;
+  }
+  function findParent(id, lists = [prog.main, prog.fn]) {
+    for (const l of lists) for (const b of l) {
+      if (b.id === id) return l;
+      const f = findParent(id, [b.body || [], b.else || []]); if (f) return f;
+    }
+    return null;
+  }
+  function findList(cid) {
+    if (cid === 'main') return prog.main;
+    if (cid === 'fn') return task.blocks.includes('call') ? prog.fn : null;
+    const [id, part] = cid.split(':'), b = findBlock(id);
+    return b ? b[part] : null;
+  }
+
+  function blockLabel(b, live) {
+    const t = api.t;
+    const num = (f, min, max) => live ? `<input class="num" type="number" inputmode="numeric" data-field="${f}" value="${b[f]}" min="${min}" max="${max}">` : '';
+    switch (b.type) {
+      case 'move': return `➜ ${t('b_move')}`;
+      case 'turnL': return `↺ ${t('b_turnL')}`;
+      case 'turnR': return `↻ ${t('b_turnR')}`;
+      case 'goto': return live ? `📍 ${t('x')}${num('x', 0, 9)} ${t('y')}${num('y', 0, 9)}` : `📍 ${t('b_goto')}`;
+      case 'pick': return `✋ ${t('b_pick')}`;
+      case 'drop': return `📥 ${t('b_drop')}`;
+      case 'place': return `💎 ${t('b_place')}`;
+      case 'repeat': return live ? `🔁 ${num('n', 0, 20)}×` : `🔁 ${t('b_repeat1')}`;
+      case 'if': return `🚦 ${t('b_if')} ${t('c_red')}`;
+      case 'set': return live ? `📦 ${t('var')} =${num('n', 0, 9)}` : `📦 ${t('b_set1')} ${t('var')}`;
+      case 'moveVar': return `➜ ${t('var')}`;
+      case 'call': return `🧩 ${t('fnName')}`;
+    }
+    return b.type;
+  }
+  function py(list, ind) {
+    const p = '    '.repeat(ind), out = [];
+    const body = (l) => (l.length ? py(l, ind + 1) : ['    '.repeat(ind + 1) + 'pass']);
+    for (const b of list) {
+      switch (b.type) {
+        case 'move': out.push(p + 'move()'); break;
+        case 'turnL': out.push(p + 'turn_left()'); break;
+        case 'turnR': out.push(p + 'turn_right()'); break;
+        case 'goto': out.push(`${p}go_to(${b.x}, ${b.y})`); break;
+        case 'pick': out.push(p + 'pick_up()'); break;
+        case 'drop': out.push(p + 'put_down()'); break;
+        case 'place': out.push(p + 'place_crystal()'); break;
+        case 'repeat': out.push(`${p}for i in range(${b.n}):`, ...body(b.body)); break;
+        case 'if': out.push(`${p}if box_is_red():`, ...body(b.body)); if (b.else.length) out.push(`${p}else:`, ...body(b.else)); break;
+        case 'set': out.push(`${p}steps = ${b.n}`); break;
+        case 'moveVar': out.push(p + 'move(steps)'); break;
+        case 'call': out.push(p + 'my_move()'); break;
+      }
+    }
+    return out;
+  }
+
+  function zoneEl(list, cid) {
+    const z = document.createElement('div');
+    z.className = 'wz' + (cid === activeCid ? ' active' : '') + (cid === 'main' || cid === 'fn' ? ' root' : '');
+    z.dataset.cid = cid;
+    list.forEach((b) => z.appendChild(blockEl(b)));
+    z.insertAdjacentHTML('beforeend', '<span class="wz-slot">+</span>');
+    z.addEventListener('click', (e) => {
+      if (e.target.closest('input,button') || e.target.closest('.wz') !== z) return;
+      activeCid = cid;
+      document.querySelectorAll('#wPanel .wz').forEach((o) => o.classList.toggle('active', o.dataset.cid === cid));
+    });
+    return z;
+  }
+  function blockEl(b) {
+    const d = document.createElement('div');
+    d.className = `wchip cat-${CAT[b.type]}` + (b.body ? ' box' : '');
+    d.dataset.bid = b.id;
+    d.innerHTML = `<span class="wchip-l">${blockLabel(b, true)}</span><button class="wchip-x" aria-label="delete">×</button>`;
+    d.querySelector('.wchip-x').onclick = (e) => {
+      e.stopPropagation(); if (running) return;
+      const l = findParent(b.id); l.splice(l.indexOf(b), 1);
+      if (!findList(activeCid)) activeCid = 'main';
+      renderEditor();
+    };
+    d.querySelectorAll('[data-field]').forEach((inp) => {
+      const f = inp.dataset.field;
+      const upd = () => { let v = parseInt(inp.value, 10); if (isNaN(v)) return; b[f] = Math.max(+inp.min, Math.min(+inp.max, v)); afterEdit(); };
+      inp.addEventListener('input', upd);
+      inp.addEventListener('change', () => { upd(); inp.value = b[f]; });
+    });
+    if (b.body) d.appendChild(zoneEl(b.body, b.id + ':body'));
+    if (b.else) { d.insertAdjacentHTML('beforeend', `<span class="wchip-else">${api.t('b_else')}</span>`); d.appendChild(zoneEl(b.else, b.id + ':else')); }
+    return d;
+  }
+  function renderEditor() {
+    if (!findList(activeCid)) activeCid = 'main';
+    $('#wpMain').replaceChildren(zoneEl(prog.main, 'main'));
+    if ($('#wpFn')) $('#wpFn').replaceChildren(zoneEl(prog.fn, 'fn'));
+    afterEdit();
+  }
+  function afterEdit() {
+    const n = count(prog.main) + count(prog.fn), el = $('#wpCount');
+    el.textContent = task.limit ? `${n} / ${task.limit}` : String(n);
+    el.classList.toggle('over', !!task.limit && n > task.limit);
+    api.store.set('world:prog:' + task.c, { main: strip(prog.main), fn: strip(prog.fn) });
+  }
+  function addBlock(type) {
+    if (running) return;
+    const list = findList(activeCid) || prog.main, b = newBlock(type);
+    list.push(b); api.sfx.tap();
+    if (b.body) activeCid = b.id + ':body';
+    renderEditor();
+    const el = document.querySelector(`#wPanel [data-bid="${b.id}"]`); if (el) el.classList.add('pop');
+  }
+
+  function renderPanel() {
+    const tk = task, c = conceptOf(tk.c), t = api.t;
+    const panel = $('#wPanel');
+    panel.style.setProperty('--c', c.color);
+    panel.innerHTML = `
+      <div class="wd-row"><span class="wd-lab">🤖</span><div class="wd-prog" id="wpMain"></div><span id="wpCount" class="wd-count" title="${t('blocks')}"></span></div>
+      ${tk.blocks.includes('call') ? `<div class="wd-row fn"><span class="wd-lab">🧩 ${t('fnName')} =</span><div class="wd-prog" id="wpFn"></div></div>` : ''}
+      <div class="wd-row wd-bar">
+        <div class="wd-pal" id="wpPalette"></div>
+        <div class="wd-act">
+          <button class="btn icon" id="wpHint" title="${t('hint')}">💡</button>
+          <button class="btn icon" id="wpReset" title="${t('reset')}">↺</button>
+          <button class="btn run big" id="wpRun">${t('run')}</button>
+        </div>
+      </div>`;
+    $('#wpPalette').innerHTML = tk.blocks.map((type) => `<button class="wchip pal cat-${CAT[type]}" data-add="${type}">${blockLabel(newBlock(type), false)}</button>`).join('');
+    panel.querySelectorAll('[data-add]').forEach((b) => (b.onclick = () => addBlock(b.dataset.add)));
+    $('#wpRun').onclick = runProgram;
+    $('#wpReset').onclick = () => { stopRun(); resetRun(0); say(api.L(tk.goal)); };
+    $('#wpHint').onclick = () => say('💡 ' + api.L(tk.hint), 'hint');
+    renderEditor();
+  }
+  // Fahim's speech bubble: the mission, tips and results
+  function say(html, kind = '') {
+    const el = $('#wBubble'); el.className = 'w-bubble ' + kind; el.innerHTML = html; el.hidden = false;
+  }
+  const msg = (text, kind) => say(text, kind);
+  function showVar() { if (run && task && task.blocks.includes('set') && run.v) say(`📦 ${api.t('var')} = <b>${run.v}</b>`); }
+  function highlight(id, cls = 'running') {
+    document.querySelectorAll('#wPanel .wchip.running, #wPanel .wchip.failed').forEach((e) => e.classList.remove('running', 'failed'));
+    const el = id && document.querySelector(`#wPanel [data-bid="${id}"]`);
+    if (el) el.classList.add(cls);
+  }
+  function lock(on) {
+    $('#wPanel').classList.toggle('is-running', on);
+    const r = $('#wpRun'); if (r) { r.textContent = on ? api.t('stop') : api.t('run'); r.classList.toggle('stop', on); }
+  }
+
+  function startChallenge(st) {
+    station = st; task = st.task; task.isl = ISLANDS[st.isl];
+    const saved = api.store.get('world:prog:' + task.c, null);
+    prog = saved ? { main: saved.main.map((r) => newBlock(r.type, r)), fn: saved.fn.map((r) => newBlock(r.type, r)) }
+      : { main: (task.starter || []).map((r) => newBlock(r.type, r)), fn: [] };
+    activeCid = 'main';
+    mode = 'challenge'; near = null; keys.clear(); joy.x = joy.y = 0;
+    savedCam = { yaw: cam.yaw, pitch: cam.pitch, dist: cam.dist };
+    cam.yaw = 0; cam.pitch = 0.72; cam.dist = Math.max(task.w, task.h * 1.3) * 0.8 + 4.5;
+    $('#world').classList.add('challenge'); $('#wPanel').hidden = false; $('#wPrompt').hidden = true;
+    renderPanel(); resetRun(0); resize();
+    say(`<b>${task.icon} ${api.L(task.title)}</b><br>${api.L(task.goal)}`);
+    api.sfx.tap();
+  }
+  function exitChallenge() {
+    stopRun();
+    const isl = task.isl;
+    resetZone(isl, isDone(ISLANDS.indexOf(isl)));
+    mode = 'explore'; run = null;
+    placeAt({ x: station.x + 0.5, y: ground[C(station.x, station.z + 1)], z: station.z + 1.6 });
+    P.yaw = Math.PI;
+    Object.assign(cam, savedCam || {}); cam.yaw = 0;
+    $('#world').classList.remove('challenge'); $('#wPanel').hidden = true; $('#wBubble').hidden = true;
+    task = null; resize(); texts(); checkBridges();
+  }
+
+  function resetRun(trial) {
+    const tk = task, isl = tk.isl;
+    run = { x: tk.start[0], y: tk.start[1], dir: tk.start[2], carry: null, placed: new Set(), steps: 0, v: 0, trial,
+      items: tk.items.map((it) => ({ x: it.x, y: it.y, kind: it.kind, color: tk.trials ? tk.trials[trial] : it.color })) };
+    anims.length = 0;
+    resetZone(isl, false, trial);
+    const c = cellW(isl, run.x, run.y);
+    placeAt({ x: c.x + 0.5, y: isl.zone.top, z: c.z + 0.5 }); P.yaw = yawOf(run.dir);
+    fahim.position.x = P.x;
+    highlight(null); showVar();
+    document.querySelectorAll('#wPanel [data-trial]').forEach((e) => e.classList.toggle('on', +e.dataset.trial === trial));
+  }
+  function stopRun() { runToken++; running = false; if ($('#wPanel')) lock(false); }
+
+  const tween = (dur, fn) => new Promise((done) => anims.push({ t: 0, dur, fn, done }));
+  const solid = (gx, gy) => (task.walls || []).some((w) => w.x === gx && w.y === gy) || run.placed.has(gx + ',' + gy);
+  const inGrid = (gx, gy) => gx >= 0 && gy >= 0 && gx < task.w && gy < task.h;
+  const halt = (key, bid) => { throw { key, bid }; };
+  async function walk(b, gx, gy) {
+    if (!inGrid(gx, gy)) halt('w_edge', b.id);
+    if (solid(gx, gy)) halt('w_bump', b.id);
+    const c = cellW(task.isl, gx, gy), x0 = P.x, z0 = P.z, top = task.isl.zone.top;
+    api.tone(330 + gx * 20 + gy * 30, 0.05, 'triangle', 0, 0.05);
+    await tween(0.32, (k) => { P.x = x0 + (c.x + 0.5 - x0) * k; P.z = z0 + (c.z + 0.5 - z0) * k; P.y = top + Math.sin(k * Math.PI) * 0.1; });
+    run.x = gx; run.y = gy;
+  }
+  async function face(dir) {
+    if (run.dir === dir) return;
+    const a0 = P.yaw, a1 = yawOf(dir), d = Math.atan2(Math.sin(a1 - a0), Math.cos(a1 - a0));
+    await tween(0.2, (k) => (P.yaw = a0 + d * k));
+    run.dir = dir;
+  }
+  async function exec(list, token, depth) {
+    if (depth > 12) halt('dizzy');
+    for (const b of list) {
+      if (token !== runToken) throw { stop: true };
+      if (++run.steps > 300) halt('dizzy', b.id);
+      highlight(b.id);
+      const [dx, dy] = DIRS[run.dir];
+      switch (b.type) {
+        case 'move': await walk(b, run.x + dx, run.y + dy); break;
+        case 'turnL': await face(ORDER[(ORDER.indexOf(run.dir) + 1) % 4]); break;
+        case 'turnR': await face(ORDER[(ORDER.indexOf(run.dir) + 3) % 4]); break;
+        case 'goto':
+          if (!inGrid(b.x, b.y)) halt('w_edge', b.id);
+          while (run.x !== b.x) { await face(run.x < b.x ? 'E' : 'W'); await walk(b, run.x + Math.sign(b.x - run.x), run.y); }
+          while (run.y !== b.y) { await face(run.y < b.y ? 'N' : 'S'); await walk(b, run.x, run.y + Math.sign(b.y - run.y)); }
+          break;
+        case 'pick': {
+          if (run.carry != null) halt('w_handsFull', b.id);
+          const i = run.items.findIndex((it) => it.x === run.x && it.y === run.y);
+          if (i < 0) halt('w_nothing', b.id);
+          run.carry = i; run.items[i].x = run.items[i].y = -99;
+          api.tone(660, 0.08, 'triangle'); await sleep(220);
+          break;
+        }
+        case 'drop': {
+          if (run.carry == null) halt('w_notCarrying', b.id);
+          const it = run.items[run.carry], m = task.isl.zone.items[run.carry], c = cellW(task.isl, run.x, run.y);
+          it.x = run.x; it.y = run.y; run.carry = null;
+          m.position.set(c.x + 0.5, task.isl.zone.top + 0.3, c.z + 0.5);
+          api.tone(440, 0.08, 'triangle'); await sleep(220);
+          break;
+        }
+        case 'place': {
+          const fx = run.x + dx, fy = run.y + dy;
+          if (!inGrid(fx, fy)) halt('w_edge', b.id);
+          if (solid(fx, fy) || run.items.some((it) => it.x === fx && it.y === fy)) halt('w_cantPlace', b.id);
+          run.placed.add(fx + ',' + fy); lightLamp(task.isl, fx, fy);
+          const c = cellW(task.isl, fx, fy); burst(c.x + 0.5, task.isl.zone.top + 0.6, c.z + 0.5, 0xe879f9);
+          api.sfx.gem(); await sleep(250);
+          break;
+        }
+        case 'repeat': for (let i = 0; i < b.n; i++) await exec(b.body, token, depth); break;
+        case 'if': await exec(run.carry != null && run.items[run.carry].color === 'red' ? b.body : b.else, token, depth); break;
+        case 'set': run.v = b.n; showVar(); { const v = $('#wpVar'); if (v) { v.classList.remove('flash'); void v.offsetWidth; v.classList.add('flash'); } } await sleep(250); break;
+        case 'moveVar': for (let i = 0; i < run.v; i++) await walk(b, run.x + DIRS[run.dir][0], run.y + DIRS[run.dir][1]); break;
+        case 'call': await exec(prog.fn, token, depth + 1); break;
+      }
+    }
+  }
+  function checkGoal() {
+    const tk = task;
+    if (tk.goal_type === 'lamps') return tk.pads.every((p) => run.placed.has(p.x + ',' + p.y)) ? null : { key: 'w_notLit' };
+    for (let i = 0; i < run.items.length; i++) {
+      const it = run.items[i];
+      if (run.carry === i) return { key: 'w_stillCarrying' };
+      const pad = tk.pads.find((p) => p.x === it.x && p.y === it.y);
+      if (!pad) return { key: 'w_notDelivered' };
+      if (pad.accepts !== it.kind && pad.accepts !== it.color) return { key: 'w_wrongPad' };
+    }
+    return null;
+  }
+  async function runProgram() {
+    if (running) { stopRun(); msg(api.t('stopped')); return; }
+    const tk = task, n = count(prog.main) + count(prog.fn), t = api.t;
+    if (!prog.main.length) return msg(t('empty'), 'bad');
+    if (tk.limit && n > tk.limit) return msg(t('overLimit', { max: tk.limit }), 'bad');
+    if (tk.mustUse && !uses(prog.main, tk.mustUse)) return msg(t('mustUse'), 'bad');
+    running = true; const token = ++runToken; lock(true); msg('');
+    const trials = tk.trials ? tk.trials.length : 1;
+    for (let tr = 0; tr < trials; tr++) {
+      resetRun(tr);
+      if (trials > 1) msg(t('w_testing', { n: tr + 1, c: t('w_' + tk.trials[tr]) }));
+      await sleep(350);
+      let err = null;
+      try { await exec(prog.main, token, 0); if (token === runToken) err = checkGoal(); }
+      catch (e) { if (e && e.stop) return; if (e && e.key) err = e; else throw e; }
+      if (token !== runToken) return;
+      if (err) {
+        running = false; lock(false);
+        highlight(err.bid, 'failed');
+        api.sfx.fail();
+        const x0 = P.x; tween(0.4, (k) => (P.x = x0 + Math.sin(k * Math.PI * 6) * 0.08 * (1 - k)));
+        msg((trials > 1 ? `${t('w_box')} ${tr + 1} (${t('w_' + tk.trials[tr])}): ` : '') + t(err.key), 'bad');
+        return;
+      }
+    }
+    running = false; lock(false); highlight(null);
+    win(n);
+  }
+  function win(n) {
+    const tk = task, c = conceptOf(tk.c), t = api.t;
+    const stars = n <= tk.optimal ? 3 : n <= tk.optimal + 2 ? 2 : 1;
+    const first = !done[tk.c];
+    done[tk.c] = Math.max(done[tk.c] || 0, stars); api.store.set('world:done', done);
+    api.sfx.win(); api.confetti();
+    burst(P.x, P.y + 1.2, P.z, 0xfacc15);
+    refreshLabels(); hud();
+    say(`<b>${t('win')}</b> <span class="w-stars">${'★'.repeat(stars)}<i>${'★'.repeat(3 - stars)}</i></span><br>${c.icon} ${t('learned', { c: api.L(c.name) })}${first && ISLANDS.indexOf(tk.isl) < bridges.length ? '<br>🌉 ' + t('w_bridgeReady') : ''}`, 'good');
+    $('.wd-act').innerHTML = `<button class="btn" id="wpAgain">${t('replay')}</button><button class="btn run big" id="wpGo">${t('w_continue')}</button>`;
+    $('#wpAgain').onclick = () => { renderPanel(); resetRun(0); say(api.L(tk.goal)); };
+    $('#wpGo').onclick = exitChallenge;
+  }
+  function checkBridges() {
+    const fresh = bridges.filter((b) => isDone(b.k) && !built.includes(b.k));
+    if (!fresh.length) return;
+    fresh.forEach((b) => { built.push(b.k); pending.push(...b.cells); });
+    api.store.set('world:built', built);
+    rebuildGhost(); hud();
+    setTimeout(() => { api.sfx.win(); toast(api.t('w_bridgeNew', { i: islandName(fresh[fresh.length - 1].k + 1) })); }, 400);
   }
   function toast(msg) {
     const el = $('#wToast'); el.textContent = msg; el.classList.add('on');
@@ -606,6 +1050,7 @@ window.CubeIsland = (() => {
   // ---------------------------------------------------------------------
   const ptr = new THREE.Vector2();
   function tap(clientX, clientY) {
+    if (mode !== 'explore') return;
     const r = renderer.domElement.getBoundingClientRect();
     ptr.set(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1);
     raycaster.setFromCamera(ptr, camera);
@@ -649,6 +1094,7 @@ window.CubeIsland = (() => {
       <canvas id="wCanvas"></canvas>
       <div class="w-top">
         <button class="btn" id="wHome"></button>
+        <button class="btn" id="wExit"></button>
         <div class="w-title" id="wTitle"></div>
         <div class="w-stats"><span id="wStars"></span><span id="wGems"></span></div>
         <button class="btn ghost" id="wLang"></button>
@@ -662,27 +1108,30 @@ window.CubeIsland = (() => {
       <div class="w-hotbar" id="wHotbar"></div>
       <div class="w-stick" id="wStick"><i></i></div>
       <button class="w-jump" id="wJump">⤒</button>
+      <div class="w-bubble" id="wBubble" hidden></div>
+      <div class="w-panel" id="wPanel" hidden></div>
       <div class="w-help" id="wHelp" hidden><div class="w-help-card" id="wHelpCard"></div></div>`;
     document.body.appendChild(el);
 
-    $('#wHome').onclick = () => { savePos(); close(); api.home(); };
+    $('#wHome').onclick = () => { close(); savePos(); api.home(); };
     $('#wLang').onclick = () => { api.toggleLang(); texts(); };
     $('#wMute').onclick = () => { api.toggleMute(); texts(); };
     $('#wHelpBtn').onclick = help;
+    $('#wExit').onclick = () => exitChallenge();
     $('#wPrompt').onclick = () => useStation(near);
 
     const cv = $('#wCanvas');
     let drag = null;
     cv.addEventListener('pointerdown', (e) => { drag = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: 0 }; cv.setPointerCapture(e.pointerId); });
     cv.addEventListener('pointermove', (e) => {
-      if (!drag || drag.id !== e.pointerId) return;
+      if (!drag || drag.id !== e.pointerId || mode !== 'explore') return;
       const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
       drag.x = e.clientX; drag.y = e.clientY; drag.moved += Math.abs(dx) + Math.abs(dy);
       cam.yaw -= dx * 0.007; cam.pitch = Math.max(0.12, Math.min(1.35, cam.pitch + dy * 0.005));
     });
     cv.addEventListener('pointerup', (e) => { if (drag && drag.id === e.pointerId && drag.moved < 8) tap(e.clientX, e.clientY); drag = null; });
     cv.addEventListener('pointercancel', () => (drag = null));
-    cv.addEventListener('wheel', (e) => { e.preventDefault(); cam.dist = Math.max(4, Math.min(15, cam.dist + e.deltaY * 0.01)); }, { passive: false });
+    cv.addEventListener('wheel', (e) => { e.preventDefault(); if (mode !== 'explore') return; cam.dist = Math.max(4, Math.min(15, cam.dist + e.deltaY * 0.01)); }, { passive: false });
     cv.addEventListener('contextmenu', (e) => e.preventDefault());
 
     const stick = $('#wStick'), knob = stick.firstChild;
@@ -704,7 +1153,7 @@ window.CubeIsland = (() => {
     jb.addEventListener('pointerup', endJump); jb.addEventListener('pointercancel', endJump); jb.addEventListener('pointerleave', endJump);
 
     window.addEventListener('keydown', (e) => {
-      if (!active || !$('#wHelp').hidden) return;
+      if (!active || !$('#wHelp').hidden || mode !== 'explore') return;
       if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
       keys.add(e.code);
       if (e.code === 'KeyE' || e.code === 'Enter') useStation(near);
@@ -718,11 +1167,13 @@ window.CubeIsland = (() => {
   }
   function texts() {
     $('#wHome').textContent = api.t('w_home');
+    $('#wExit').textContent = api.t('w_exit');
     $('#wTitle').textContent = '🏝️ ' + api.t('w_title');
     $('#wLang').textContent = api.t('langBtn');
     $('#wMute').textContent = api.muted() ? '🔇' : '🔊';
     $('#world').dir = api.lang() === 'ar' ? 'rtl' : 'ltr';
     hotbar(); hud(); prompt(); refreshLabels();
+    if (mode === 'challenge') { stopRun(); renderPanel(); resetRun(0); say(`<b>${task.icon} ${api.L(task.title)}</b><br>${api.L(task.goal)}`); }
   }
   function help() {
     const touch = matchMedia('(pointer: coarse)').matches;
@@ -747,12 +1198,22 @@ window.CubeIsland = (() => {
     gems.forEach((g) => scene.remove(g.mesh));
     bridges.forEach((b) => scene.remove(b.lock));
     crystals.length = 0;
+    ISLANDS.forEach((isl) => { if (isl.zone && isl.zone.group) scene.remove(isl.zone.group); });
     generate(); makeStationMeshes(); refreshLabels(); rebuild();
   }
   function resize() {
     if (!renderer) return;
-    const w = window.innerWidth, h = window.innerHeight;
-    renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
+    const w = window.innerWidth, h = window.innerHeight, panel = $('#wPanel');
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h; camera.clearViewOffset();
+    // keep the task grid in the free part of the screen, beside (or above) the code panel
+    if (mode === 'challenge' && panel) {
+      const ph = panel.offsetHeight; camera.aspect = w / (h + ph); camera.setViewOffset(w, h + ph, 0, ph, w, h);
+      // narrow screens: step back so the whole task area fits
+      const free = w / Math.max(1, h - ph), base = Math.max(task.w, task.h * 1.3) * 0.8 + 4.5;
+      cam.dist = base * Math.max(1, Math.min(2.6, 1.5 / free));
+    }
+    camera.updateProjectionMatrix();
   }
 
   // ---------------------------------------------------------------------
@@ -763,6 +1224,7 @@ window.CubeIsland = (() => {
     edits = api.store.get('world:edits', {});
     built = api.store.get('world:built', []);
     gotGems = api.store.get('world:gems', {});
+    done = api.store.get('world:done', {});
     buildDom(); buildScene(); makeMaterials();
     generate(); makeStationMeshes(); rebuild();
     const saved = api.store.get('world:pos', null);
@@ -778,22 +1240,16 @@ window.CubeIsland = (() => {
     $('#world').hidden = false;
     active = true; lastT = 0; keys.clear();
     resize(); texts();
-    // new bridges for islands finished since last visit
-    const fresh = bridges.filter((b) => isDone(b.k) && !built.includes(b.k));
-    if (fresh.length) {
-      fresh.forEach((b) => { built.push(b.k); pending.push(...b.cells); });
-      api.store.set('world:built', built);
-      rebuildGhost(); hud();
-      setTimeout(() => { api.sfx.win(); toast(api.t('w_bridgeNew', { i: islandName(fresh[fresh.length - 1].k + 1) })); }, 400);
-    }
+    checkBridges();
     if (!api.store.get('world:helped', false)) help();
     cancelAnimationFrame(raf); raf = requestAnimationFrame(frame);
   }
   function close() {
+    if (mode === 'challenge') exitChallenge();
     active = false; cancelAnimationFrame(raf); keys.clear();
     while (pending.length) vox[pending.shift()] = T.bridge;
     if (inited) { rebuild(); $('#world').hidden = true; }
     document.body.classList.remove('in-world');
   }
-  return { init, open, close, isOpen: () => active, debug: { P, stations, bridges, cam } };
+  return { init, open, close, isOpen: () => active, debug: { P, stations, bridges, cam, get prog() { return prog; }, newBlock, startChallenge, runProgram } };
 })();
