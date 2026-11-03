@@ -29,7 +29,7 @@ window.CubeIsland = (() => {
   ];
 
   let api, inited = false, active = false, raf = 0, lastT = 0;
-  let renderer, scene, camera, raycaster, fahim, shadow, waterTex;
+  let renderer, scene, camera, raycaster, fahim, shadow, waterTex, faceArrow;
   const vox = new Uint8Array(W * D * H), prot = new Uint8Array(W * D * H);
   const land = new Uint8Array(W * D), ground = new Uint8Array(W * D), islandOf = new Uint8Array(W * D), clear = new Uint8Array(W * D);
   const stations = [], gems = [], bridges = [], stationAt = new Map();
@@ -352,13 +352,34 @@ window.CubeIsland = (() => {
     if (!isl.zone) return;
     const z0 = isl.zone, tk = isl.task, top = z0.top;
     const g = new THREE.Group(); scene.add(g); z0.group = g;
-    const tileMat = [new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.32, depthWrite: false }),
-      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.16, depthWrite: false })];
-    const tileGeo = new THREE.PlaneGeometry(0.94, 0.94);
+    const flat = (w, d, color, opacity, x, z, y = top + 0.02) => {
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(w, d), new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthWrite: false }));
+      m.rotation.x = -Math.PI / 2; m.position.set(x, y, z); g.add(m); return m;
+    };
+    // checkerboard + grid lines + a coloured border, so every square is easy to see
     for (let gx = 0; gx < tk.w; gx++) for (let gy = 0; gy < tk.h; gy++) {
-      const c = cellW(isl, gx, gy), m = new THREE.Mesh(tileGeo, tileMat[(gx + gy) % 2]);
-      m.rotation.x = -Math.PI / 2; m.position.set(c.x + 0.5, top + 0.02, c.z + 0.5); g.add(m);
+      const c = cellW(isl, gx, gy);
+      flat(1, 1, (gx + gy) % 2 ? 0x000000 : 0xffffff, (gx + gy) % 2 ? 0.07 : 0.22, c.x + 0.5, c.z + 0.5);
     }
+    const x0 = z0.ox, zTop = z0.oz, lineY = top + 0.03;
+    for (let i = 1; i < tk.w; i++) flat(0.05, tk.h, 0x0a0d14, 0.45, x0 + i, zTop + tk.h / 2, lineY);
+    for (let j = 1; j < tk.h; j++) flat(tk.w, 0.05, 0x0a0d14, 0.45, x0 + tk.w / 2, zTop + j, lineY);
+    const border = parseInt(conceptOf(tk.c).color.slice(1), 16);
+    flat(tk.w + 0.24, 0.12, border, 1, x0 + tk.w / 2, zTop, lineY);
+    flat(tk.w + 0.24, 0.12, border, 1, x0 + tk.w / 2, zTop + tk.h, lineY);
+    flat(0.12, tk.h, border, 1, x0, zTop + tk.h / 2, lineY);
+    flat(0.12, tk.h, border, 1, x0 + tk.w, zTop + tk.h / 2, lineY);
+    // dotted line from each thing to the spot where it has to go
+    z0.guides = new THREE.Group(); g.add(z0.guides);
+    tk.items.forEach((it) => tk.pads.forEach((p) => {
+      if (p.accepts !== it.kind && !(tk.trials || []).includes(p.accepts)) return;
+      const a = cellW(isl, it.x, it.y), b = cellW(isl, p.x, p.y), len = Math.hypot(b.x - a.x, b.z - a.z);
+      const col = parseInt(p.color.slice(1), 16);
+      for (let d = 0.55; d < len - 0.45; d += 0.32) {
+        const k = d / len, m = new THREE.Mesh(new THREE.CircleGeometry(0.07, 10), new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.9, depthWrite: false }));
+        m.rotation.x = -Math.PI / 2; m.position.set(a.x + 0.5 + (b.x - a.x) * k, top + 0.04, a.z + 0.5 + (b.z - a.z) * k); z0.guides.add(m);
+      }
+    }));
     z0.pads = tk.pads.map((p) => {
       const c = cellW(isl, p.x, p.y);
       const m = boxMesh(0.9, 0.06, 0.9, parseInt(p.color.slice(1), 16));
@@ -395,6 +416,7 @@ window.CubeIsland = (() => {
       const c = cellW(isl, gx, gy); m.position.set(c.x + 0.5, z0.top + 0.3, c.z + 0.5); m.visible = true;
     });
     if (solved && tk.goal_type === 'lamps') tk.pads.forEach((p) => lightLamp(isl, p.x, p.y));
+    z0.guides.visible = !solved;
   }
   function lightLamp(isl, gx, gy) {
     const z0 = isl.zone, m = ITEM_LOOK.crystal(), c = cellW(isl, gx, gy);
@@ -481,6 +503,9 @@ window.CubeIsland = (() => {
       clouds.push(c); scene.add(c);
     }
     fahim = makeFahim(); scene.add(fahim);
+    const tri = new THREE.Shape(); tri.moveTo(0, 0.32); tri.lineTo(0.26, -0.06); tri.lineTo(0.1, -0.06); tri.lineTo(0.1, -0.26); tri.lineTo(-0.1, -0.26); tri.lineTo(-0.1, -0.06); tri.lineTo(-0.26, -0.06);
+    faceArrow = new THREE.Mesh(new THREE.ShapeGeometry(tri), new THREE.MeshBasicMaterial({ color: 0xf26a1b, transparent: true, opacity: 0.95, depthWrite: false, side: THREE.DoubleSide }));
+    faceArrow.rotation.order = 'YXZ'; scene.add(faceArrow);
     shadow = new THREE.Mesh(new THREE.CircleGeometry(0.45, 20), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.25, depthWrite: false }));
     shadow.rotation.x = -Math.PI / 2; scene.add(shadow);
   }
@@ -605,6 +630,12 @@ window.CubeIsland = (() => {
     // Fahim + camera
     fahim.position.set(P.x, P.y + (P.ground ? Math.abs(Math.sin(time * 9)) * (keys.size || joy.x || joy.y ? 0.04 : 0) : 0), P.z);
     fahim.rotation.y = P.yaw;
+    faceArrow.visible = mode === 'challenge';
+    if (faceArrow.visible) {
+      faceArrow.position.set(P.x + Math.sin(P.yaw) * 0.72, task.isl.zone.top + 0.05, P.z + Math.cos(P.yaw) * 0.72);
+      faceArrow.rotation.set(-Math.PI / 2, P.yaw + Math.PI, 0);
+      faceArrow.material.opacity = 0.7 + Math.sin(time * 5) * 0.25;
+    }
     let gy = Math.floor(P.y); while (gy > 0 && !vox[I(Math.floor(P.x), gy - 1, Math.floor(P.z))]) gy--;
     shadow.position.set(P.x, (gy > 0 ? gy : SEA) + 0.02, P.z); shadow.visible = gy > 0;
     let tx = P.x, ty = P.y + 1.1, tz = P.z;
@@ -875,6 +906,10 @@ window.CubeIsland = (() => {
     cam.yaw = 0; cam.pitch = 0.72; cam.dist = Math.max(task.w, task.h * 1.3) * 0.8 + 4.5;
     $('#world').classList.add('challenge'); $('#wPanel').hidden = false; $('#wPrompt').hidden = true;
     renderPanel(); resetRun(0); resize();
+    { // jump the camera straight to the task area (no long swoop across the sea)
+      const z0 = task.isl.zone; Object.assign(look, { x: z0.ox + z0.w / 2, y: z0.top, z: z0.oz + z0.h / 2 + 0.5 });
+      cam.x = look.x; cam.y = look.y + Math.sin(cam.pitch) * cam.dist; cam.z = look.z + Math.cos(cam.pitch) * cam.dist;
+    }
     say(`<b>${task.icon} ${api.L(task.title)}</b><br>${api.L(task.goal)}`);
     api.sfx.tap();
   }
