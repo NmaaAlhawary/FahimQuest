@@ -619,7 +619,7 @@ window.CubeIsland = (() => {
     else {
       const v = new THREE.Vector3(P.x, P.y + 2.1, P.z).project(camera), el = $('#wBubble'), w = window.innerWidth, h = window.innerHeight;
       const bx = Math.max(16 + el.offsetWidth / 2, Math.min(w - 16 - el.offsetWidth / 2, (v.x + 1) / 2 * w));
-      const by = Math.max(70 + el.offsetHeight, Math.min(h - $('#wPanel').offsetHeight - 10, (1 - v.y) / 2 * h));
+      const by = Math.max(70 + el.offsetHeight, Math.min(h - ($('#wPanel').hidden ? 0 : $('#wPanel').offsetHeight) - 10, (1 - v.y) / 2 * h));
       el.style.left = bx + 'px'; el.style.top = by + 'px';
     }
     renderer.render(scene, camera);
@@ -846,9 +846,13 @@ window.CubeIsland = (() => {
   }
   // Fahim's speech bubble: the mission, tips and results
   function say(html, kind = '') {
-    const el = $('#wBubble'); el.className = 'w-bubble ' + kind; el.innerHTML = html; el.hidden = false;
+    const el = $('#wBubble');
+    el.className = 'w-bubble ' + kind; el.hidden = false;
+    el.innerHTML = `<span class="wb-face">${MINI_FACE}</span><span class="wb-text">${html}</span>`;
+    void el.offsetWidth; el.classList.add('in');
   }
   const msg = (text, kind) => say(text, kind);
+  const MINI_FACE = '<svg viewBox="0 0 120 120"><rect x="14" y="24" width="92" height="78" rx="26" fill="#22D3EE" stroke="#0A0D14" stroke-width="7"/><rect x="26" y="40" width="68" height="34" rx="16" fill="#0A0D14"/><circle cx="45" cy="57" r="8" fill="#a5f3fc"/><circle cx="75" cy="57" r="8" fill="#a5f3fc"/><path d="M46 86 Q60 96 74 86" stroke="#0A0D14" stroke-width="6" fill="none" stroke-linecap="round"/><circle cx="60" cy="12" r="8" fill="#F26A1B" stroke="#0A0D14" stroke-width="4"/></svg>';
   function showVar() { if (run && task && task.blocks.includes('set') && run.v) say(`📦 ${api.t('var')} = <b>${run.v}</b>`); }
   function highlight(id, cls = 'running') {
     document.querySelectorAll('#wPanel .wchip.running, #wPanel .wchip.failed').forEach((e) => e.classList.remove('running', 'failed'));
@@ -882,7 +886,7 @@ window.CubeIsland = (() => {
     placeAt({ x: station.x + 0.5, y: ground[C(station.x, station.z + 1)], z: station.z + 1.6 });
     P.yaw = Math.PI;
     Object.assign(cam, savedCam || {}); cam.yaw = 0;
-    $('#world').classList.remove('challenge'); $('#wPanel').hidden = true; $('#wBubble').hidden = true;
+    $('#world').classList.remove('challenge'); $('#wPanel').hidden = true; $('#wBubble').hidden = true; $('#wWin').hidden = true;
     task = null; resize(); texts(); checkBridges();
   }
 
@@ -1015,9 +1019,25 @@ window.CubeIsland = (() => {
     api.sfx.win(); api.confetti();
     burst(P.x, P.y + 1.2, P.z, 0xfacc15);
     refreshLabels(); hud();
-    say(`<b>${t('win')}</b> <span class="w-stars">${'★'.repeat(stars)}<i>${'★'.repeat(3 - stars)}</i></span><br>${c.icon} ${t('learned', { c: api.L(c.name) })}${first && ISLANDS.indexOf(tk.isl) < bridges.length ? '<br>🌉 ' + t('w_bridgeReady') : ''}`, 'good');
-    $('.wd-act').innerHTML = `<button class="btn" id="wpAgain">${t('replay')}</button><button class="btn run big" id="wpGo">${t('w_continue')}</button>`;
-    $('#wpAgain').onclick = () => { renderPanel(); resetRun(0); say(api.L(tk.goal)); };
+    // celebration card in the middle of the free screen
+    const next = ISLANDS.indexOf(tk.isl) + 1;
+    $('#wBubble').hidden = true;
+    const card = $('#wWin');
+    card.style.setProperty('--c', c.color);
+    card.innerHTML = `
+      <div class="ww-card">
+        <div class="ww-stars">${[1, 2, 3].map((i) => `<span class="${i <= stars ? 'on' : ''}" style="animation-delay:${0.15 + i * 0.18}s">★</span>`).join('')}</div>
+        <h2>${t('win')}</h2>
+        <p class="ww-task">${tk.icon} ${api.L(tk.title)}</p>
+        <div class="ww-learn"><span class="ww-badge">${c.icon}</span><div><small>${t('w_youLearned')}</small><b>${api.L(c.name)}</b></div></div>
+        <pre dir="ltr">${c.code.replace(/</g, '&lt;')}</pre>
+        ${first && next < ISLANDS.length ? `<div class="ww-bridge">🌉 ${t('w_bridgeTo', { i: islandName(next) })}</div>` : ''}
+        <p class="ww-count">${t('count', { n })}${n > tk.optimal ? ` · 🎯 ${t('w_tryFewer', { n: tk.optimal })}` : ''}</p>
+        <div class="ww-btns"><button class="btn" id="wpAgain">${t('replay')}</button><button class="btn run big" id="wpGo">${t('w_continue')}</button></div>
+      </div>`;
+    card.hidden = false;
+    $('#wPanel').hidden = true; resize();
+    $('#wpAgain').onclick = () => { card.hidden = true; $('#wPanel').hidden = false; renderPanel(); resetRun(0); resize(); say(api.L(tk.goal)); };
     $('#wpGo').onclick = exitChallenge;
   }
   function checkBridges() {
@@ -1109,6 +1129,7 @@ window.CubeIsland = (() => {
       <div class="w-stick" id="wStick"><i></i></div>
       <button class="w-jump" id="wJump">⤒</button>
       <div class="w-bubble" id="wBubble" hidden></div>
+      <div class="w-win" id="wWin" hidden></div>
       <div class="w-panel" id="wPanel" hidden></div>
       <div class="w-help" id="wHelp" hidden><div class="w-help-card" id="wHelpCard"></div></div>`;
     document.body.appendChild(el);
@@ -1208,7 +1229,7 @@ window.CubeIsland = (() => {
     camera.aspect = w / h; camera.clearViewOffset();
     // keep the task grid in the free part of the screen, beside (or above) the code panel
     if (mode === 'challenge' && panel) {
-      const ph = panel.offsetHeight; camera.aspect = w / (h + ph); camera.setViewOffset(w, h + ph, 0, ph, w, h);
+      const ph = panel.hidden ? 0 : panel.offsetHeight; camera.aspect = w / (h + ph); camera.setViewOffset(w, h + ph, 0, ph, w, h);
       // narrow screens: step back so the whole task area fits
       const free = w / Math.max(1, h - ph), base = Math.max(task.w, task.h * 1.3) * 0.8 + 4.5;
       cam.dist = base * Math.max(1, Math.min(2.6, 1.5 / free));
